@@ -4,7 +4,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import productRoutes from './Routes/productRoutes.js';
 import authRoutes from './Routes/authRoutes.js';
-import { upload, uploadImage } from './Controllers/uploadController.js';
+import { upload, uploadImage, uploadMultiple, uploadMultipleImages } from './Controllers/uploadController.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -33,6 +33,7 @@ app.use(express.static(path.join(__dirname, 'view', 'dist')));
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.post('/api/upload', upload.single('image'), uploadImage);
+app.post('/api/upload-multiple', uploadMultiple.array('images', 3), uploadMultipleImages);
 
 // ✅ Fallback route – yalnız frontend üçün
 app.get('*', (req, res) => {

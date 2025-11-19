@@ -19,23 +19,65 @@ export const getAllProducts = async (req, res) => {
   }
 };
 
-// Tək məhsulu gətir
+// Tək məhsulu gətir (slug və ya ID ilə)
 export const getProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    console.log('Request params:', req.params);
+    console.log('Request query:', req.query);
+    console.log('Request URL:', req.originalUrl);
+    
+    // Route-da :id və ya :slug ola bilər
+    const slug = req.params.slug || req.params.id || req.params[0];
+    
+    if (!slug || slug === 'undefined' || slug === 'null' || slug.trim() === '') {
+      console.error('Slug is missing or invalid:', slug);
+      return res.status(400).json({
+        success: false,
+        message: 'Slug və ya ID təqdim edilməlidir',
+        received: slug
+      });
+    }
+    
+    const cleanSlug = String(slug).trim();
+    console.log('Get product requested with (cleaned):', cleanSlug);
+    
+    // Slug və ya ID ilə məhsul tap
+    let product = null;
+    
+    // MongoDB ObjectId formatındadırsa, ID ilə tap
+    if (cleanSlug.match(/^[0-9a-fA-F]{24}$/)) {
+      console.log('Searching by ID:', cleanSlug);
+      product = await Product.findById(cleanSlug);
+    } else {
+      // Slug ilə tap
+      console.log('Searching by slug:', cleanSlug);
+      product = await Product.findOne({ slug: cleanSlug });
+      
+      // Slug ilə tapılmadısa, ID kimi yoxla (köhnə məhsullar üçün)
+      if (!product) {
+        console.log('Not found by slug, trying as ID:', cleanSlug);
+        // ID formatında olub olmadığını yoxla
+        if (cleanSlug.match(/^[0-9a-fA-F]{24}$/)) {
+          product = await Product.findById(cleanSlug);
+        }
+      }
+    }
     
     if (!product) {
+      console.log('Product not found:', slug);
       return res.status(404).json({
         success: false,
         message: 'Məhsul tapılmadı'
       });
     }
 
+    console.log('Product found:', product.name, product.slug || 'No slug');
     res.status(200).json({
       success: true,
       data: product
     });
   } catch (error) {
+    console.error('Get product error:', error);
     res.status(500).json({
       success: false,
       message: 'Məhsulu gətirərkən xəta baş verdi',
@@ -50,25 +92,45 @@ export const createProduct = async (req, res) => {
     console.log('Request headers:', req.headers);
     console.log('User from middleware:', req.user);
 
-    const { name, price, category, imageUrl, description, inStock, isWeightBased, pricePerKg } = req.body;
+    const {
+      name,
+      price,
+      category,
+      imageUrl,
+      description,
+      inStock,
+      isWeightBased,
+      pricePerKg,
+      images = [],
+      isSized = false,
+      sizeType,
+      availableSizes = []
+    } = req.body;
 
     // Məcburi sahələri yoxla
-    if (!name || !price || !category) {
+    if (!name || !category) {
       return res.status(400).json({
         success: false,
-        message: 'Ad, qiymət və kateqoriya məcburidir'
+        message: 'Ad və kateqoriya məcburidir'
       });
     }
 
-    // Qiymətin düzgün format olduğunu yoxla
-    if (isNaN(price) || price < 0) {
+    // Çəki ilə satılır olsa, pricePerKg məcburidir
+    if (isWeightBased && (!pricePerKg || isNaN(pricePerKg) || pricePerKg <= 0)) {
       return res.status(400).json({
         success: false,
-        message: 'Qiymət düzgün formatda deyil'
+        message: 'Çəki ilə məhsul üçün kq başına qiymət məcburidir'
       });
     }
 
-    // Kateqoriyanın düzgün olduğunu yoxla (Frontend ilə uyğunlaşdırılmış)
+    // Çəki ilə satılır deyilsə, price məcburidir
+    if (!isWeightBased && (!price || isNaN(price) || price < 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Qiymət məcburidir və düzgün formatda olmalıdır'
+      });
+    }
+
     const validCategories = [
       'İçkilər',
       'Şirniyyat',
@@ -96,13 +158,26 @@ export const createProduct = async (req, res) => {
     // Yeni məhsul yarat
     const productData = {
       name: name.trim(),
-      price: Number(price),
       category,
       imageUrl: imageUrl || '',
+      images: Array.isArray(images) && images.length > 0 ? images : [],
       description: description?.trim() || '',
       inStock: inStock ?? true,
       isWeightBased: isWeightBased ?? false,
-      pricePerKg: isWeightBased && pricePerKg ? Number(pricePerKg) : 0
+      // Ölçülü məhsul (Geyim kateqoriyası üçün)
+      isSized: category === 'Geyim' && isSized === true,
+      sizeType: category === 'Geyim' && isSized ? (sizeType || null) : null,
+      availableSizes: category === 'Geyim' && isSized && Array.isArray(availableSizes) ? availableSizes : [],
+      ...(isWeightBased 
+        ? { 
+            pricePerKg: Number(pricePerKg),
+            price: Number(pricePerKg) / 1000 // 1 qram üçün qiymət
+          }
+        : {
+            price: Number(price),
+            pricePerKg: 0
+          }
+      )
     };
 
     console.log('Yaradılacaq məhsul datası:', productData);
@@ -127,9 +202,49 @@ export const createProduct = async (req, res) => {
 // Məhsulu yenilə (only admin)
 export const updateProduct = async (req, res) => {
   try {
+    const { name, price, category, imageUrl, images, description, inStock, isWeightBased, pricePerKg, isSized, sizeType, availableSizes } = req.body;
+
+    // Çəki ilə satılır olsa, pricePerKg məcburidir
+    if (isWeightBased && (!pricePerKg || isNaN(pricePerKg) || pricePerKg <= 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Çəki ilə məhsul üçün kq başına qiymət məcburidir'
+      });
+    }
+
+    // Çəki ilə satılır deyilsə, price məcburidir
+    if (!isWeightBased && (!price || isNaN(price) || price < 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Qiymət məcburidir və düzgün formatda olmalıdır'
+      });
+    }
+
+    // Update data hazırla
+    const updateData = {
+      ...req.body,
+      images: Array.isArray(images) && images.length > 0 ? images : (req.body.images || []),
+      // Ölçülü məhsul (Geyim kateqoriyası üçün)
+      isSized: category === 'Geyim' && isSized === true,
+      sizeType: category === 'Geyim' && isSized ? (sizeType || null) : null,
+      availableSizes: category === 'Geyim' && isSized && Array.isArray(availableSizes) ? availableSizes : [],
+      // Çəki ilə satılır olsa, price-i avtomatik hesabla (1 qram üçün)
+      // Çəki ilə satılır deyilsə, price-i yaz
+      ...(isWeightBased
+        ? {
+            pricePerKg: Number(pricePerKg),
+            price: Number(pricePerKg) / 1000 // 1 qram üçün qiymət
+          }
+        : {
+            price: Number(price),
+            pricePerKg: 0
+          }
+      )
+    };
+
     const product = await Product.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      updateData,
       {
         new: true,
         runValidators: true
@@ -184,7 +299,30 @@ export const deleteProduct = async (req, res) => {
 // Kateqoriyaya görə məhsulları gətir
 export const getProductsByCategory = async (req, res) => {
   try {
-    const products = await Product.find({ category: req.params.category });
+    let category = req.params.category;
+    
+    // URL-dən category parametrini decode et
+    if (category) {
+      try {
+        category = decodeURIComponent(category);
+      } catch (e) {
+        // Əgər decode olunmursa, olduğu kimi istifadə et
+        console.log('Category decode error, using as is:', category);
+      }
+    }
+    
+    console.log('Fetching products for category:', category);
+    
+    if (!category || category.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Kateqoriya adı təqdim edilməlidir'
+      });
+    }
+    
+    const products = await Product.find({ category: category.trim() });
+    
+    console.log(`Found ${products.length} products for category: ${category}`);
     
     res.status(200).json({
       success: true,
@@ -192,6 +330,7 @@ export const getProductsByCategory = async (req, res) => {
       data: products
     });
   } catch (error) {
+    console.error('Get products by category error:', error);
     res.status(500).json({
       success: false,
       message: 'Kateqoriya məhsullarını gətirərkən xəta baş verdi',
